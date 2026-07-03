@@ -386,10 +386,17 @@ def fit_impedance(
     p0: Optional[np.ndarray] = None,
     max_nfev: int = 20000,
     n_starts: int = 24,
+    fix_L: bool = False,
 ) -> FitResult:
     """Fit the equivalent circuit. Runs a multi-start least-squares to avoid
-    local minima; if `p0` is given it is used as the (single) start."""
+    local minima; if `p0` is given it is used as the (single) start.
+
+    `fix_L=True` pins the inductance L to ~0 (used when fitting data whose
+    inductive part has already been removed)."""
     lo, hi = default_bounds(n_elem)
+    if fix_L:
+        hi = hi.copy()
+        hi[0] = 1e-30              # L ~ 0 (least_squares needs lo < hi strictly)
     hi_clip = np.where(np.isinf(hi), 1e30, hi)
     wr, wi = _weights(data.z, weighting)
 
@@ -431,8 +438,15 @@ def fit_impedance(
     perror = np.full_like(res.x, np.nan)
     try:
         J = res.jac
-        cov = np.linalg.inv(J.T @ J) * chi2_red
-        perror = np.sqrt(np.clip(np.diag(cov), 0, np.inf))
+        # A parameter pinned at an active bound (e.g. L when fix_L=True) gets a
+        # zero Jacobian column, which makes J.T@J singular. Estimate the
+        # covariance from the sensitive (free) columns only and report 0 error
+        # for the pinned ones, so the remaining parameters still get error bars.
+        col_norm = np.linalg.norm(J, axis=0)
+        free = col_norm > 1e-12 * max(col_norm.max(), 1e-30)
+        cov = np.linalg.inv(J[:, free].T @ J[:, free]) * chi2_red
+        perror = np.zeros_like(res.x)
+        perror[free] = np.sqrt(np.clip(np.diag(cov), 0, np.inf))
     except np.linalg.LinAlgError:
         pass
 
@@ -447,4 +461,60 @@ def fit_impedance(
         success=bool(res.success),
         message=str(res.message),
         z_fit=circuit_impedance(res.x, data.freq, n_elem),
+    )
+
+
+# --------------------------------------------------------------------------- #
+#  Inductance correction
+# --------------------------------------------------------------------------- #
+def inductance_corrected(data: ImpedanceData, L: float) -> ImpedanceData:
+    """Return a copy of `data` with the pure-inductive part jwL removed:
+
+        Z_corr(w) = Z(w) - jwL      (Z' unchanged,  Z'' -> Z'' - wL)
+
+    Wiring/lead inductance shows up as jwL and only distorts the imaginary
+    part at high frequency (the low-freq tail dipping below the real axis in a
+    Nyquist plot). Subtracting it leaves the ohmic + polarization response."""
+    w = data.omega
+    return ImpedanceData(
+        freq=data.freq.copy(),
+        z_real=data.z_real.copy(),
+        z_imag=data.z_imag - w * L,
+    )
+
+
+@dataclass
+class CorrectionResult:
+    """Outcome of removing the fitted inductance and re-fitting."""
+    L: float                     # inductance removed (H), from the original fit
+    data_corr: ImpedanceData     # L-corrected measured data
+    fit: FitResult               # re-fit of the corrected data (L pinned to ~0)
+    Rs: float                    # ohmic resistance (Ohm)
+    Rp_list: List[float]         # polarization resistance of each element (Ohm)
+    Rp_total: float              # total polarization resistance = sum(Rp_list)
+
+
+def remove_inductance(
+    data: ImpedanceData,
+    fit_result: FitResult,
+    weighting: str = "modulus",
+) -> CorrectionResult:
+    """Take an existing fit, subtract only its inductance jwL from the measured
+    data, and re-fit the corrected spectrum (with L pinned to ~0) so the ohmic
+    resistance Rs and the polarization resistances R_i are re-extracted from the
+    inductance-free data."""
+    L = float(fit_result.params[0])
+    data_corr = inductance_corrected(data, L)
+    refit = fit_impedance(
+        data_corr, fit_result.n_elem, weighting=weighting, fix_L=True,
+    )
+    Rs = float(refit.params[1])
+    Rp_list = [float(refit.params[2 + 3 * k]) for k in range(refit.n_elem)]
+    return CorrectionResult(
+        L=L,
+        data_corr=data_corr,
+        fit=refit,
+        Rs=Rs,
+        Rp_list=Rp_list,
+        Rp_total=float(sum(Rp_list)),
     )

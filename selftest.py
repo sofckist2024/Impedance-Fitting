@@ -4,7 +4,12 @@ Run:  python selftest.py
 """
 import numpy as np
 
-from impedance_fit import parse_z_file, fit_impedance, circuit_impedance
+from impedance_fit import (
+    parse_z_file,
+    fit_impedance,
+    circuit_impedance,
+    remove_inductance,
+)
 
 TRUE = dict(L=1.0e-6, Rs=10.0,
             R1=100.0, Q1=2.0e-5, n1=0.85,
@@ -48,8 +53,26 @@ def main():
     zf = circuit_impedance(res.params, data.freq, 2)
     rms = np.sqrt(np.mean(np.abs(data.z - zf) ** 2)) / np.mean(np.abs(data.z)) * 100
     print(f"\nrelative RMS residual: {rms:.3f}%")
-    print("RESULT:", "PASS" if ok and res.success else "CHECK")
-    return 0 if ok else 1
+
+    # --- inductance-correction round trip ---------------------------------- #
+    corr = remove_inductance(data, res, weighting="modulus")
+    w = data.omega
+    # the corrected imaginary part must equal measured - w*L exactly
+    imag_ok = np.allclose(corr.data_corr.z_imag, data.z_imag - w * corr.L)
+    # re-fit must find ~no inductance left and recover Rs / Rp
+    L_left = float(corr.fit.params[0])
+    Rp_true = TRUE["R1"] + TRUE["R2"]
+    rs_err = abs(corr.Rs - TRUE["Rs"]) / TRUE["Rs"] * 100
+    rp_err = abs(corr.Rp_total - Rp_true) / Rp_true * 100
+    print("\n-- inductance correction --")
+    print(f"L removed        : {corr.L:.4g} H   (residual after refit {L_left:.2e} H)")
+    print(f"Rs   true {TRUE['Rs']:8.4g}  corrected {corr.Rs:8.4g}   rel.err {rs_err:6.2f}%")
+    print(f"Rp   true {Rp_true:8.4g}  corrected {corr.Rp_total:8.4g}   rel.err {rp_err:6.2f}%")
+    corr_ok = imag_ok and rs_err < 5 and rp_err < 5 and L_left < 1e-20
+
+    all_ok = ok and res.success and corr_ok
+    print("\nRESULT:", "PASS" if all_ok else "CHECK")
+    return 0 if all_ok else 1
 
 
 if __name__ == "__main__":
