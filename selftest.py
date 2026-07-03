@@ -9,6 +9,9 @@ from impedance_fit import (
     fit_impedance,
     circuit_impedance,
     remove_inductance,
+    detect_hf_artifact,
+    subset,
+    ImpedanceData,
 )
 
 TRUE = dict(L=1.0e-6, Rs=10.0,
@@ -70,9 +73,45 @@ def main():
     print(f"Rp   true {Rp_true:8.4g}  corrected {corr.Rp_total:8.4g}   rel.err {rp_err:6.2f}%")
     corr_ok = imag_ok and rs_err < 5 and rp_err < 5 and L_left < 1e-20
 
-    all_ok = ok and res.success and corr_ok
+    hf_ok = test_hf_artifact()
+
+    all_ok = ok and res.success and corr_ok and hf_ok
     print("\nRESULT:", "PASS" if all_ok else "CHECK")
     return 0 if all_ok else 1
+
+
+def test_hf_artifact():
+    """Clean vertical inductive tail -> nothing excluded; an injected high-freq
+    twist -> excluded while the arcs and fit stay intact."""
+    print("\n-- high-frequency artifact detection --")
+    data = parse_z_file(build_z_text())
+
+    # (1) clean synthetic data: the inductive tail is a straight vertical line,
+    #     so the detector must not drop anything
+    keep_clean = detect_hf_artifact(data)
+    clean_ok = bool(keep_clean.all())
+    print(f"clean data          : {int((~keep_clean).sum())} excluded  "
+          f"(expect 0) -> {'OK' if clean_ok else 'FAIL'}")
+
+    # (2) inject a twist: shift Z' of the 3 highest-freq points sideways so the
+    #     top of the inductive branch curls off the vertical line
+    zr = data.z_real.copy()
+    hi3 = np.argsort(data.freq)[-3:]           # 3 highest-frequency points
+    arc_w = data.z_real.max() - data.z_real.min()
+    zr[hi3] += 0.4 * arc_w                      # curl to the right (돌아가는 모양)
+    twisted = ImpedanceData(data.freq.copy(), zr, data.z_imag.copy())
+
+    keep = detect_hf_artifact(twisted)
+    excluded = set(np.where(~keep)[0])
+    caught = set(hi3.tolist()).issubset(excluded)
+    # the fit on the kept subset must still recover Rs / Rp
+    sub = subset(twisted, keep)
+    r = fit_impedance(sub, 2, weighting="modulus")
+    rs_err = abs(r.params[1] - TRUE["Rs"]) / TRUE["Rs"] * 100
+    print(f"twisted data        : {int((~keep).sum())} excluded, "
+          f"top-3 caught={caught}, Rs after={r.params[1]:.4g} (err {rs_err:.2f}%)")
+    twist_ok = caught and rs_err < 5
+    return clean_ok and twist_ok
 
 
 if __name__ == "__main__":

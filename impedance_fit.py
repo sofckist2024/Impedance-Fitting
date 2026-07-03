@@ -220,6 +220,68 @@ def preview_columns(text: str, max_rows: int = 5) -> Tuple[List[List[str]], int]
 
 
 # --------------------------------------------------------------------------- #
+#  High-frequency artifact detection
+# --------------------------------------------------------------------------- #
+def detect_hf_artifact(
+    data: ImpedanceData,
+    tol_frac: float = 0.08,
+    min_inductive: int = 3,
+    min_keep: int = 5,
+) -> np.ndarray:
+    """Boolean keep-mask that drops the high-frequency 'twist' at the top of the
+    inductive tail.
+
+    Physics: at high frequency the (R-CPE) arcs collapse and Z → Rs + jwL, so
+    the inductive branch (Z'' > 0) should be a straight *vertical* line at
+    Z' ≈ Rs. Real data often curls / loops at the very highest frequencies
+    (mutual-inductance and cable artifacts) instead of staying vertical. This
+    walks down from the highest frequency and flags the contiguous top block
+    whose Z' departs from that vertical line by more than `tol_frac` of the arc
+    width, so only the clean vertical part (and the arcs below) are fitted.
+
+    Returns an all-True mask (exclude nothing) when there is no clear inductive
+    tail, when the tail is already vertical, or when exclusion would leave fewer
+    than `min_keep` points."""
+    zr = np.asarray(data.z_real, float)
+    zi = np.asarray(data.z_imag, float)
+    f = np.asarray(data.freq, float)
+    keep = np.ones(len(f), dtype=bool)
+
+    ind = np.where(zi > 0)[0]                        # inductive points (Z'' > 0)
+    if len(ind) < min_inductive:
+        return keep
+
+    order_up = ind[np.argsort(f[ind])]              # inductive idx, low → high f
+    n_base = max(3, len(ind) // 5)
+    Rs_base = float(np.median(zr[order_up[:n_base]]))    # foot of the vertical line
+    Rp_scale = max(float(np.max(zr) - Rs_base), float(np.ptp(zr)), 1e-9)
+    tol = max(tol_frac * Rp_scale, 1e-12)
+
+    # from the highest frequency downward, drop the contiguous run whose Z'
+    # departs from the vertical line; stop at the first in-band (vertical) point
+    cut_freq = None
+    for k in order_up[::-1]:                         # high → low f
+        if abs(zr[k] - Rs_base) > tol:
+            cut_freq = f[k]
+        else:
+            break
+    if cut_freq is not None:
+        keep[f >= cut_freq] = False
+
+    if int(keep.sum()) < min_keep:                  # safety: never over-trim
+        keep[:] = True
+    return keep
+
+
+def subset(data: ImpedanceData, mask: np.ndarray) -> ImpedanceData:
+    """Return a new ImpedanceData containing only the points where mask is True."""
+    mask = np.asarray(mask, dtype=bool)
+    return ImpedanceData(
+        freq=data.freq[mask], z_real=data.z_real[mask], z_imag=data.z_imag[mask],
+    )
+
+
+# --------------------------------------------------------------------------- #
 #  Circuit model
 # --------------------------------------------------------------------------- #
 def circuit_impedance(params: np.ndarray, freq: np.ndarray, n_elem: int) -> np.ndarray:

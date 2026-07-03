@@ -6,12 +6,11 @@ Model:  L - Rs - (R1-CPE1) - (R2-CPE2) - ... - (Rn-CPEn)
 Run with:   streamlit run app.py
 """
 
-import io
-
 import numpy as np
 import pandas as pd
-import matplotlib.pyplot as plt
 import streamlit as st
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 
 from impedance_fit import (
     parse_z_file,
@@ -22,6 +21,8 @@ from impedance_fit import (
     initial_guess,
     param_labels,
     remove_inductance,
+    detect_hf_artifact,
+    subset,
 )
 
 st.set_page_config(page_title="임피던스 피팅", layout="wide")
@@ -47,6 +48,18 @@ with st.sidebar:
         index=0,
         help="modulus: 1/|Z| (EIS 표준), proportional: 성분별 1/|Z'|,1/|Z''|, unit: 균등",
     )
+
+    st.header("3. 고주파 처리")
+    auto_hf = st.checkbox(
+        "고주파 꼬임 구간 자동 제외", value=True,
+        help="인덕턴스 영향으로 수직으로 올라오는 부분만 남기고, 고주파에서 "
+             "수직선에서 벗어나 돌아가며(꼬이며) 나온 구간을 피팅에서 제외합니다.",
+    )
+    hf_tol = st.slider(
+        "수직 판정 허용폭 (아크 대비 %)", 1, 30, 8, disabled=not auto_hf,
+        help="Z'가 수직선(Z'≈Rs)에서 이 값(아크 폭 대비 %)보다 더 벗어나면 "
+             "'꼬임'으로 보고 제외합니다. 작을수록 더 엄격하게(더 많이) 제외.",
+    ) / 100.0
 
 if up is None:
     st.info("좌측에서 ZView `.z` 파일(또는 freq, Z', Z'' 텍스트 파일)을 업로드하세요.")
@@ -80,6 +93,24 @@ if flip:
 
 st.success(f"데이터 {len(data)} 점 로드 완료  ·  주파수 {data.freq.min():.3g} – {data.freq.max():.3g} Hz")
 
+# --- high-frequency artifact exclusion ------------------------------------- #
+# `keep` marks the points used for fitting; excluded points are the high-freq
+# "twist" that curls off the vertical inductive line.
+if auto_hf:
+    keep = detect_hf_artifact(data, tol_frac=hf_tol)
+else:
+    keep = np.ones(len(data), dtype=bool)
+excl = ~keep
+data_fit = subset(data, keep)
+
+if excl.any():
+    f_excl = data.freq[excl]
+    st.warning(
+        f"고주파 꼬임 구간 **{int(excl.sum())}점** 을 피팅에서 제외했습니다 "
+        f"(f ≥ {f_excl.min():.3g} Hz). 피팅은 남은 {len(data_fit)}점으로 수행됩니다. "
+        "좌측 ‘고주파 처리’에서 끄거나 허용폭을 조절할 수 있습니다."
+    )
+
 # --------------------------------------------------------------------------- #
 #  Fit
 # --------------------------------------------------------------------------- #
@@ -87,57 +118,107 @@ do_fit = st.button("피팅 실행 ▶", type="primary")
 
 if do_fit:
     with st.spinner("피팅 중..."):
-        result = fit_impedance(data, int(n_elem), weighting=weighting)
+        result = fit_impedance(data_fit, int(n_elem), weighting=weighting)
     st.session_state["result"] = result
     st.session_state["n_elem_fit"] = int(n_elem)
 
 result = st.session_state.get("result")
-# discard a stale fit that belongs to a previously loaded / differently mapped dataset
-if result is not None and len(result.z_fit) != len(data):
+# discard a stale fit that belongs to a previously loaded / differently mapped
+# dataset (or a changed high-frequency exclusion)
+if result is not None and len(result.z_fit) != len(data_fit):
     result = None
 
 
 # --------------------------------------------------------------------------- #
-#  Plots
+#  Interactive plots (Plotly: 드래그=확대, 더블클릭=원위치, 휠=확대/축소)
 # --------------------------------------------------------------------------- #
-def nyquist_ax(ax):
-    ax.set_xlabel("Z'  (Ω)")
-    ax.set_ylabel("-Z''  (Ω)")
-    ax.set_aspect("equal", adjustable="datalim")
-    ax.grid(True, alpha=0.3)
+PLOT_CONFIG = {"scrollZoom": True, "displaylogo": False,
+               "modeBarButtonsToRemove": ["lasso2d", "select2d"]}
 
+
+def nyquist_fig(traces, height=480):
+    """traces: list of (name, z_real, z_imag, freq, color, is_line[, symbol])."""
+    fig = go.Figure()
+    for tr in traces:
+        name, zr, zi, freq, color, is_line = tr[:6]
+        symbol = tr[6] if len(tr) > 6 else "circle"
+        fig.add_trace(go.Scatter(
+            x=zr, y=-np.asarray(zi),
+            name=name,
+            mode="lines" if is_line else "markers",
+            line=dict(color=color, width=2),
+            marker=dict(color=color, size=7, symbol=symbol),
+            customdata=freq,
+            hovertemplate="Z'=%{x:.4g} Ω<br>-Z''=%{y:.4g} Ω"
+                          "<br>f=%{customdata:.4g} Hz<extra>" + name + "</extra>",
+        ))
+    fig.update_layout(
+        height=height, hovermode="closest", dragmode="zoom",
+        margin=dict(l=60, r=20, t=10, b=50),
+        legend=dict(orientation="h", yanchor="bottom", y=1.0, x=0),
+    )
+    fig.update_xaxes(title_text="Z'  (Ω)", showgrid=True, zeroline=False)
+    # equal aspect so the arcs keep their true (semi-circular) shape
+    fig.update_yaxes(title_text="-Z''  (Ω)", showgrid=True, zeroline=False,
+                     scaleanchor="x", scaleratio=1)
+    return fig
+
+
+def bode_fig(series, height=480):
+    """series: list of (name, freq, z_complex, color, is_line[, symbol])."""
+    fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.07)
+    for s in series:
+        name, freq, z, color, is_line = s[:5]
+        symbol = s[5] if len(s) > 5 else "circle"
+        mode = "lines" if is_line else "markers"
+        fig.add_trace(go.Scatter(
+            x=freq, y=np.abs(z), name=name, mode=mode,
+            line=dict(color=color, width=2), marker=dict(color=color, size=6, symbol=symbol),
+            hovertemplate="f=%{x:.4g} Hz<br>|Z|=%{y:.4g} Ω<extra>" + name + "</extra>",
+        ), row=1, col=1)
+        fig.add_trace(go.Scatter(
+            x=freq, y=np.degrees(np.angle(z)), name=name, mode=mode,
+            line=dict(color=color, width=2), marker=dict(color=color, size=6, symbol=symbol),
+            showlegend=False,
+            hovertemplate="f=%{x:.4g} Hz<br>phase=%{y:.3g}°<extra>" + name + "</extra>",
+        ), row=2, col=1)
+    fig.update_layout(
+        height=height, hovermode="closest",
+        margin=dict(l=60, r=20, t=10, b=50),
+        legend=dict(orientation="h", yanchor="bottom", y=1.0, x=0),
+    )
+    fig.update_xaxes(type="log", showgrid=True)
+    fig.update_xaxes(title_text="frequency (Hz)", row=2, col=1)
+    fig.update_yaxes(type="log", title_text="|Z| (Ω)", showgrid=True, row=1, col=1)
+    fig.update_yaxes(title_text="phase (°)", showgrid=True, row=2, col=1)
+    return fig
+
+
+st.caption("📈 그래프는 **드래그하면 확대**, **더블클릭하면 원위치**, 마우스 휠로도 확대/축소됩니다. "
+           "오른쪽 위 도구막대에서 이동(pan)·이미지 저장(PNG)도 할 수 있습니다.")
 
 col_left, col_right = st.columns(2)
 
 with col_left:
     st.subheader("Nyquist")
-    fig, ax = plt.subplots(figsize=(5, 5))
-    ax.plot(data.z_real, -data.z_imag, "o", ms=4, label="data", color="#1f77b4")
+    tr = [("data (피팅)", data_fit.z_real, data_fit.z_imag, data_fit.freq, "#1f77b4", False)]
+    if excl.any():
+        tr.append(("제외 (고주파 꼬임)", data.z_real[excl], data.z_imag[excl],
+                   data.freq[excl], "#999999", False, "x"))
     if result is not None:
         zf = result.z_fit
-        ax.plot(zf.real, -zf.imag, "-", lw=2, label="fit", color="#d62728")
-    nyquist_ax(ax)
-    ax.legend()
-    st.pyplot(fig)
+        tr.append(("fit", zf.real, zf.imag, data_fit.freq, "#d62728", True))
+    st.plotly_chart(nyquist_fig(tr), use_container_width=True, config=PLOT_CONFIG)
 
 with col_right:
     st.subheader("Bode")
-    fig2, (axm, axp) = plt.subplots(2, 1, figsize=(5, 5), sharex=True)
-    mod = np.abs(data.z)
-    phase = np.degrees(np.angle(data.z))
-    axm.loglog(data.freq, mod, "o", ms=4, color="#1f77b4", label="data")
-    axp.semilogx(data.freq, phase, "o", ms=4, color="#1f77b4")
+    ser = [("data (피팅)", data_fit.freq, data_fit.z, "#1f77b4", False)]
+    if excl.any():
+        ser.append(("제외 (고주파 꼬임)", data.freq[excl], data.z[excl],
+                    "#999999", False, "x"))
     if result is not None:
-        zf = result.z_fit
-        axm.loglog(data.freq, np.abs(zf), "-", lw=2, color="#d62728", label="fit")
-        axp.semilogx(data.freq, np.degrees(np.angle(zf)), "-", lw=2, color="#d62728")
-    axm.set_ylabel("|Z|  (Ω)")
-    axm.grid(True, which="both", alpha=0.3)
-    axm.legend()
-    axp.set_ylabel("phase (°)")
-    axp.set_xlabel("frequency (Hz)")
-    axp.grid(True, which="both", alpha=0.3)
-    st.pyplot(fig2)
+        ser.append(("fit", data_fit.freq, result.z_fit, "#d62728", True))
+    st.plotly_chart(bode_fig(ser), use_container_width=True, config=PLOT_CONFIG)
 
 
 # --------------------------------------------------------------------------- #
@@ -173,13 +254,13 @@ if result is not None:
 
     zf = result.z_fit
     fit_table = pd.DataFrame({
-        "freq_Hz": data.freq,
-        "Zreal_data": data.z_real,
-        "Zimag_data": data.z_imag,
+        "freq_Hz": data_fit.freq,
+        "Zreal_data": data_fit.z_real,
+        "Zimag_data": data_fit.z_imag,
         "Zreal_fit": zf.real,
         "Zimag_fit": zf.imag,
-        "residual_real": data.z_real - zf.real,
-        "residual_imag": data.z_imag - zf.imag,
+        "residual_real": data_fit.z_real - zf.real,
+        "residual_imag": data_fit.z_imag - zf.imag,
     })
     st.download_button("피팅 곡선 CSV 다운로드",
                        fit_table.to_csv(index=False).encode("utf-8-sig"),
@@ -199,11 +280,11 @@ if result is not None:
     do_corr = st.checkbox("인덕턴스 보정 수행", value=False)
     if do_corr:
         # cache: only re-fit when the underlying fit / data actually changed
-        corr_key = (tuple(np.round(result.params, 12)), len(data), result.weighting)
+        corr_key = (tuple(np.round(result.params, 12)), len(data_fit), result.weighting)
         if st.session_state.get("corr_key") != corr_key:
             with st.spinner("인덕턴스 제거 후 재피팅 중..."):
                 st.session_state["corr"] = remove_inductance(
-                    data, result, weighting=result.weighting)
+                    data_fit, result, weighting=result.weighting)
             st.session_state["corr_key"] = corr_key
         corr = st.session_state["corr"]
 
@@ -218,31 +299,20 @@ if result is not None:
 
         with cp_left:
             st.markdown("**Nyquist (보정 후)**")
-            figc, axc = plt.subplots(figsize=(5, 5))
-            axc.plot(data.z_real, -data.z_imag, "o", ms=3, alpha=0.35,
-                     color="#888888", label="원본 data")
-            axc.plot(dc.z_real, -dc.z_imag, "o", ms=4,
-                     color="#1f77b4", label="보정 data")
-            axc.plot(zc_fit.real, -zc_fit.imag, "-", lw=2,
-                     color="#2ca02c", label="보정 fit")
-            nyquist_ax(axc)
-            axc.legend()
-            st.pyplot(figc)
+            # 보정 data 는 아크(–Z'' ≥ 0)만 표시: 고주파의 음수(유도성) 구간은 제외
+            arc = dc.z_imag <= 0
+            tr_c = [
+                ("원본 data", data_fit.z_real, data_fit.z_imag, data_fit.freq, "#b0b0b0", False),
+                ("보정 data", dc.z_real[arc], dc.z_imag[arc], dc.freq[arc], "#1f77b4", False),
+            ]
+            st.plotly_chart(nyquist_fig(tr_c), use_container_width=True, config=PLOT_CONFIG)
 
         with cp_right:
             st.markdown("**Bode (보정 후)**")
-            figc2, (axcm, axcp) = plt.subplots(2, 1, figsize=(5, 5), sharex=True)
-            axcm.loglog(dc.freq, np.abs(dc.z), "o", ms=4, color="#1f77b4", label="보정 data")
-            axcm.loglog(dc.freq, np.abs(zc_fit), "-", lw=2, color="#2ca02c", label="보정 fit")
-            axcp.semilogx(dc.freq, np.degrees(np.angle(dc.z)), "o", ms=4, color="#1f77b4")
-            axcp.semilogx(dc.freq, np.degrees(np.angle(zc_fit)), "-", lw=2, color="#2ca02c")
-            axcm.set_ylabel("|Z|  (Ω)")
-            axcm.grid(True, which="both", alpha=0.3)
-            axcm.legend()
-            axcp.set_ylabel("phase (°)")
-            axcp.set_xlabel("frequency (Hz)")
-            axcp.grid(True, which="both", alpha=0.3)
-            st.pyplot(figc2)
+            ser_c = [
+                ("보정 data", dc.freq, dc.z, "#1f77b4", False),
+            ]
+            st.plotly_chart(bode_fig(ser_c), use_container_width=True, config=PLOT_CONFIG)
 
         # before / after comparison of Rs and each Rp -------------------------- #
         comp_rows = [{
