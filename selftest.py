@@ -62,13 +62,13 @@ def main():
     w = data.omega
     # the corrected imaginary part must equal measured - w*L exactly
     imag_ok = np.allclose(corr.data_corr.z_imag, data.z_imag - w * corr.L)
-    # re-fit must find ~no inductance left and recover Rs / Rp
+    # inductance-free model must carry L=0 and keep Rs / Rp from the fit
     L_left = float(corr.fit.params[0])
     Rp_true = TRUE["R1"] + TRUE["R2"]
     rs_err = abs(corr.Rs - TRUE["Rs"]) / TRUE["Rs"] * 100
     rp_err = abs(corr.Rp_total - Rp_true) / Rp_true * 100
     print("\n-- inductance correction --")
-    print(f"L removed        : {corr.L:.4g} H   (residual after refit {L_left:.2e} H)")
+    print(f"L removed        : {corr.L:.4g} H   (model L set to {L_left:.2e} H)")
     print(f"Rs   true {TRUE['Rs']:8.4g}  corrected {corr.Rs:8.4g}   rel.err {rs_err:6.2f}%")
     print(f"Rp   true {Rp_true:8.4g}  corrected {corr.Rp_total:8.4g}   rel.err {rp_err:6.2f}%")
     corr_ok = imag_ok and rs_err < 5 and rp_err < 5 and L_left < 1e-20

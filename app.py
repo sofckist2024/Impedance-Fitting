@@ -272,9 +272,12 @@ if result is not None:
     st.divider()
     st.subheader("인덕턴스(L) 보정")
     st.caption(
-        "피팅으로 얻은 인덕턴스 성분 $j\\omega L$ 만 측정값에서 제거한 뒤, "
-        "$L=0$ 으로 재피팅하여 오믹 저항 $R_s$ 와 분극 저항 $R_p$ 를 다시 추출합니다. "
-        "배선/리드 인덕턴스가 만드는 고주파 꼬리(Nyquist에서 실수축 아래로 내려가는 부분)가 사라집니다."
+        "직렬 인덕턴스 $j\\omega L$ 는 허수부에만 더해지고 $R_s$·(R-CPE) 아크와 분리되므로, "
+        "**초기 피팅에서 얻은 $R_s$·$R_i$ 값이 곧 인덕턴스 없는 값**입니다. 따라서 재피팅 없이 "
+        "$L$ 만 0 으로 두어 인덕턴스 없는 회로 응답을 그립니다 (초기 피팅과 저·중주파 아크가 정확히 일치).\n\n"
+        "· **원본 data (파란 점)** = 측정값 그대로 (고주파 인덕턴스 꼬리 포함).\n"
+        "· **인덕턴스 없는 모델 (빨간 선)** = 위 수치로 그린 $L=0$ 회로 곡선 — 매끈하고 이상점이 없습니다.\n\n"
+        "측정 이상점을 피팅에서 빼려면 좌측 ‘고주파 처리’ 자동 제외를 사용하세요 (피팅·보정에 함께 반영)."
     )
 
     do_corr = st.checkbox("인덕턴스 보정 수행", value=False)
@@ -295,53 +298,54 @@ if result is not None:
 
         dc = corr.data_corr
         zc_fit = corr.fit.z_fit
+
+        # 인덕턴스 없는 모델 곡선: 재피팅에서 얻은 Rs·(R-CPE) 값으로 L=0 인 회로식을
+        # 조밀한 주파수에서 평가한 매끈한 합성 곡선 (측정 잡음/이상점이 없다)
+        model_params = corr.fit.params.copy()
+        model_params[0] = 0.0                       # 인덕턴스 제거
+        f_dense = np.logspace(np.log10(dc.freq.min()), np.log10(dc.freq.max()), 400)
+        z_model = circuit_impedance(model_params, f_dense, corr.fit.n_elem)
+
         cp_left, cp_right = st.columns(2)
 
         with cp_left:
             st.markdown("**Nyquist (보정 후)**")
-            # 보정 data 는 아크(–Z'' ≥ 0)만 표시: 고주파의 음수(유도성) 구간은 제외
-            arc = dc.z_imag <= 0
+            # 파란 점 = 원본 측정 데이터 (고주파 인덕턴스 꼬리 포함)
+            # 빨간 선 = 인덕턴스 없는 회로 모델 (피팅 수치로 그린 깨끗한 곡선)
             tr_c = [
-                ("원본 data", data_fit.z_real, data_fit.z_imag, data_fit.freq, "#b0b0b0", False),
-                ("보정 data", dc.z_real[arc], dc.z_imag[arc], dc.freq[arc], "#1f77b4", False),
+                ("원본 data", data_fit.z_real, data_fit.z_imag, data_fit.freq, "#1f77b4", False),
+                ("인덕턴스 없는 모델", z_model.real, z_model.imag, f_dense, "#d62728", True),
             ]
             st.plotly_chart(nyquist_fig(tr_c), use_container_width=True, config=PLOT_CONFIG)
 
         with cp_right:
             st.markdown("**Bode (보정 후)**")
             ser_c = [
-                ("보정 data", dc.freq, dc.z, "#1f77b4", False),
+                ("원본 data", data_fit.freq, data_fit.z, "#1f77b4", False),
+                ("인덕턴스 없는 모델", f_dense, z_model, "#d62728", True),
             ]
             st.plotly_chart(bode_fig(ser_c), use_container_width=True, config=PLOT_CONFIG)
 
-        # before / after comparison of Rs and each Rp -------------------------- #
-        comp_rows = [{
-            "항목": "Rs (오믹, Ω)",
-            "원본 피팅": result.params[1],
-            "보정 후": corr.Rs,
-            "보정 후 오차": corr.fit.perror[1],
+        # ohmic + polarization resistances (inductance-free) ------------------- #
+        st.markdown("**오믹 · 분극 저항** (인덕턴스 제거, 초기 피팅값)")
+        res_rows = [{
+            "항목": "Rs (오믹)",
+            "값 (Ω)": corr.Rs,
+            "오차 (Ω)": corr.fit.perror[1],
         }]
-        for k in range(result.n_elem):
-            comp_rows.append({
-                "항목": f"R{k + 1} (분극, Ω)",
-                "원본 피팅": result.params[2 + 3 * k],
-                "보정 후": corr.Rp_list[k],
-                "보정 후 오차": corr.fit.perror[2 + 3 * k],
+        for k in range(corr.fit.n_elem):
+            res_rows.append({
+                "항목": f"R{k + 1} (분극)",
+                "값 (Ω)": corr.Rp_list[k],
+                "오차 (Ω)": corr.fit.perror[2 + 3 * k],
             })
-        rp_orig = float(sum(result.params[2 + 3 * k] for k in range(result.n_elem)))
-        comp_rows.append({
-            "항목": "Rp 합계 (Ω)", "원본 피팅": rp_orig,
-            "보정 후": corr.Rp_total, "보정 후 오차": np.nan,
+        res_rows.append({
+            "항목": "Rp 합계", "값 (Ω)": corr.Rp_total, "오차 (Ω)": np.nan,
         })
-        comp_df = pd.DataFrame(comp_rows)
         st.dataframe(
-            comp_df.style.format(
-                {"원본 피팅": "{:.6g}", "보정 후": "{:.6g}", "보정 후 오차": "{:.3g}"}),
+            pd.DataFrame(res_rows).style.format({"값 (Ω)": "{:.6g}", "오차 (Ω)": "{:.3g}"}),
             use_container_width=True,
         )
-
-        if not corr.fit.success:
-            st.warning(f"재피팅 수렴 경고: {corr.fit.message}")
 
         # downloadable corrected spectrum ------------------------------------- #
         corr_table = pd.DataFrame({

@@ -561,21 +561,44 @@ def remove_inductance(
     fit_result: FitResult,
     weighting: str = "modulus",
 ) -> CorrectionResult:
-    """Take an existing fit, subtract only its inductance jwL from the measured
-    data, and re-fit the corrected spectrum (with L pinned to ~0) so the ohmic
-    resistance Rs and the polarization resistances R_i are re-extracted from the
-    inductance-free data."""
+    """Report the inductance-free response of an existing fit.
+
+    A series inductance contributes only jwL to the imaginary part and is
+    mathematically separable from Rs and the (R-CPE) arcs, so the Rs / R_i that
+    the fit already found ARE the inductance-free values. We therefore just zero
+    L and rebuild the circuit response — we do NOT re-fit the corrected data,
+    because a fresh fit can converge to a different local minimum and no longer
+    match the original fit's arcs. The Rs / R_i (and their errors) are carried
+    over from `fit_result` unchanged.
+
+    `weighting` is accepted for backward compatibility and is no longer used.
+    """
     L = float(fit_result.params[0])
     data_corr = inductance_corrected(data, L)
-    refit = fit_impedance(
-        data_corr, fit_result.n_elem, weighting=weighting, fix_L=True,
+
+    params0 = np.array(fit_result.params, dtype=float).copy()
+    params0[0] = 0.0                           # drop the series inductance
+    perror0 = np.array(fit_result.perror, dtype=float).copy()
+    if perror0.size:
+        perror0[0] = 0.0
+    model = FitResult(
+        params=params0,
+        perror=perror0,
+        labels=list(fit_result.labels),
+        n_elem=fit_result.n_elem,
+        weighting=fit_result.weighting,
+        chi_square=fit_result.chi_square,
+        chi_square_reduced=fit_result.chi_square_reduced,
+        success=fit_result.success,
+        message=fit_result.message,
+        z_fit=circuit_impedance(params0, data_corr.freq, fit_result.n_elem),
     )
-    Rs = float(refit.params[1])
-    Rp_list = [float(refit.params[2 + 3 * k]) for k in range(refit.n_elem)]
+    Rs = float(params0[1])
+    Rp_list = [float(params0[2 + 3 * k]) for k in range(fit_result.n_elem)]
     return CorrectionResult(
         L=L,
         data_corr=data_corr,
-        fit=refit,
+        fit=model,
         Rs=Rs,
         Rp_list=Rp_list,
         Rp_total=float(sum(Rp_list)),
