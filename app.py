@@ -27,12 +27,14 @@ from impedance_fit import (
 
 st.set_page_config(page_title="임피던스 피팅", layout="wide")
 
-head_left, head_right = st.columns([3, 1])
+head_left, head_right = st.columns([5, 2])
 with head_left:
     st.title("임피던스 피팅 (EIS Equivalent-Circuit Fitting)")
 with head_right:
+    # nowrap: 각 줄이 폭에 밀려 중간에 접히지 않도록 (두 줄로만 표시)
     st.markdown(
-        "<div style='text-align:right; padding-top:1.6rem; line-height:1.45;'>"
+        "<div style='text-align:right; padding-top:1.6rem; line-height:1.5;"
+        " white-space:nowrap;'>"
         "<span style='font-size:0.9rem;'>Produced by <b>Kyung Joong Yoon</b></span><br>"
         "<span style='font-size:0.8rem; opacity:0.7;'>"
         "[Korea Institute of Science &amp; Technology]</span>"
