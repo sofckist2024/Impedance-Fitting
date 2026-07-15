@@ -27,7 +27,19 @@ from impedance_fit import (
 
 st.set_page_config(page_title="임피던스 피팅", layout="wide")
 
-st.title("임피던스 피팅 (EIS Equivalent-Circuit Fitting)")
+head_left, head_right = st.columns([3, 1])
+with head_left:
+    st.title("임피던스 피팅 (EIS Equivalent-Circuit Fitting)")
+with head_right:
+    st.markdown(
+        "<div style='text-align:right; padding-top:1.6rem; line-height:1.45;'>"
+        "<span style='font-size:0.9rem;'>Produced by <b>Kyung Joong Yoon</b></span><br>"
+        "<span style='font-size:0.8rem; opacity:0.7;'>"
+        "[Korea Institute of Science &amp; Technology]</span>"
+        "</div>",
+        unsafe_allow_html=True,
+    )
+
 st.markdown(
     "등가회로 **L – Rs – (R₁-CPE₁) – (R₂-CPE₂) – …** 로 임피던스 데이터를 피팅합니다.\n\n"
     r"$Z(\omega) = j\omega L + R_s + \sum_i \dfrac{R_i}{1 + R_i Q_i (j\omega)^{n_i}}$"
