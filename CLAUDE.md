@@ -36,4 +36,5 @@ streamlit run app.py          # 또는 임피던스_피팅_실행.bat
 - **인덕턴스 보정**: `remove_inductance` — 피팅 L만 뺀 뒤 `fit_impedance(fix_L=True)`로 재피팅해 Rs·Rp 재추출. 고정 파라미터는 야코비안 0열이라 공분산 계산 시 감도 있는 열만 사용.
 - **고주파 꼬임 제외**: `detect_hf_artifact` — 인덕턴스 수직선(Z'≈Rs)에서 벗어나 꼬이는 최고주파 구간을 keep-mask로 제외. `subset()`으로 부분집합 만들어 피팅. UI 사이드바 ‘3. 고주파 처리’에서 on/off·허용폭 조절.
 - 코드 변경 후에는 `python selftest.py` 로 회귀 확인(피팅·인덕턴스 보정·고주파 감지 모두 PASS).
+- **exe 빌드**: `run_exe.py`(PyInstaller 진입점, headless로 서버 띄우고 브라우저 자동 오픈) + `build_exe.bat`(더블클릭 빌드). 산출물 `dist/ImpedanceFitting.exe`(단일 파일 ~126MB). 코드 수정 후 재빌드 필요. `build/`·`dist/`·`*.spec` 은 gitignore.
 - 코드/UI 문자열은 한국어. 기존 스타일(주석 밀도, 네이밍) 유지.

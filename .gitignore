@@ -21,3 +21,8 @@ Thumbs.db
 # Generated / output
 fit_parameters.csv
 fit_curve.csv
+
+# PyInstaller build artifacts
+build/
+dist/
+*.spec
