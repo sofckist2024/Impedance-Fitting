@@ -6,6 +6,10 @@ Model:  L - Rs - (R1-CPE1) - (R2-CPE2) - ... - (Rn-CPEn)
 Run with:   streamlit run app.py
 """
 
+import io
+import os
+import zipfile
+
 import numpy as np
 import pandas as pd
 import streamlit as st
@@ -26,6 +30,23 @@ from impedance_fit import (
 )
 
 st.set_page_config(page_title="임피던스 피팅", layout="wide")
+
+# 다운로드로 제공할 소스 파일 목록 (존재하는 것만 담음)
+_SOURCE_FILES = ["app.py", "impedance_fit.py", "make_sample.py", "selftest.py",
+                 "requirements.txt", "README.md"]
+
+
+@st.cache_data
+def _source_zip_bytes() -> bytes:
+    """앱 소스 .py 등을 한 ZIP 으로 묶어 bytes 로 반환."""
+    here = os.path.dirname(os.path.abspath(__file__))
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        for name in _SOURCE_FILES:
+            path = os.path.join(here, name)
+            if os.path.exists(path):
+                zf.write(path, arcname=name)
+    return buf.getvalue()
 
 head_left, head_right = st.columns([5, 2])
 with head_left:
@@ -74,6 +95,17 @@ with st.sidebar:
         help="Z'가 수직선(Z'≈Rs)에서 이 값(아크 폭 대비 %)보다 더 벗어나면 "
              "'꼬임'으로 보고 제외합니다. 작을수록 더 엄격하게(더 많이) 제외.",
     ) / 100.0
+
+    st.divider()
+    st.caption("소스 코드")
+    st.download_button(
+        "Python 소스 (.zip) 다운로드",
+        _source_zip_bytes(),
+        file_name="impedance_fitting_source.zip",
+        mime="application/zip",
+        help="app.py · impedance_fit.py 등 전체 소스를 ZIP 으로 내려받습니다.",
+        use_container_width=True,
+    )
 
 if up is None:
     st.info("좌측에서 ZView `.z` 파일(또는 freq, Z', Z'' 텍스트 파일)을 업로드하세요.")
